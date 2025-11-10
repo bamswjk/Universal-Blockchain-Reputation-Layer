@@ -7,6 +7,8 @@
 (define-constant err-insufficient-reputation (err u105))
 
 (define-data-var reputation-threshold uint u50)
+(define-data-var decay-rate uint u1)
+(define-data-var decay-interval uint u144)
 
 (define-map users
     principal
@@ -17,7 +19,8 @@
         negative-feedbacks: uint,
         sectors: (list 10 (string-ascii 20)),
         registered-at: uint,
-        is-verified: bool
+        is-verified: bool,
+        last-activity: uint
     }
 )
 
@@ -94,7 +97,8 @@
             negative-feedbacks: u0,
             sectors: sectors,
             registered-at: stacks-block-height,
-            is-verified: false
+            is-verified: false,
+            last-activity: stacks-block-height
         }))
     )
 )
@@ -194,7 +198,8 @@
                     reputation-score: new-score,
                     total-interactions: (+ (get total-interactions user-data) u1),
                     positive-feedbacks: new-positive,
-                    negative-feedbacks: new-negative
+                    negative-feedbacks: new-negative,
+                    last-activity: stacks-block-height
                 })
             )
             
@@ -265,4 +270,63 @@
             (merge verifier-data { is-active: true })
         ))
     )
+)
+
+(define-read-only (calculate-reputation-decay (user principal))
+    (let
+        (
+            (user-data (unwrap! (map-get? users user) err-not-found))
+            (current-score (get reputation-score user-data))
+            (last-active (get last-activity user-data))
+            (blocks-inactive (- stacks-block-height last-active))
+            (decay-periods (/ blocks-inactive (var-get decay-interval)))
+            (total-decay (* decay-periods (var-get decay-rate)))
+        )
+        (ok {
+            current-score: current-score,
+            decay-amount: total-decay,
+            new-score: (if (>= current-score total-decay)
+                (- current-score total-decay)
+                u0
+            ),
+            blocks-inactive: blocks-inactive
+        })
+    )
+)
+
+(define-public (apply-reputation-decay (user principal))
+    (let
+        (
+            (user-data (unwrap! (map-get? users user) err-not-found))
+            (decay-info (unwrap! (calculate-reputation-decay user) err-not-found))
+            (new-score (get new-score decay-info))
+        )
+        (ok (map-set users user
+            (merge user-data {
+                reputation-score: new-score,
+                last-activity: stacks-block-height
+            })
+        ))
+    )
+)
+
+(define-public (update-decay-rate (new-rate uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (ok (var-set decay-rate new-rate))
+    )
+)
+
+(define-public (update-decay-interval (new-interval uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (ok (var-set decay-interval new-interval))
+    )
+)
+
+(define-read-only (get-decay-config)
+    (ok {
+        decay-rate: (var-get decay-rate),
+        decay-interval: (var-get decay-interval)
+    })
 )
